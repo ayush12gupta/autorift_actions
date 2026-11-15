@@ -499,15 +499,21 @@ def main():
     # grab near infrared band only
     img1 = img1_ds.B08.squeeze().values
     img2 = img2_ds.B08.squeeze().values
+    print(f"DEBUG img1 shape={img1.shape} dtype={img1.dtype} valid={np.isfinite(img1).mean():.3f} min={np.nanmin(img1) if np.isfinite(img1).any() else None} max={np.nanmax(img1) if np.isfinite(img1).any() else None}")
+    print(f"DEBUG img2 shape={img2.shape} dtype={img2.dtype} valid={np.isfinite(img2).mean():.3f}")
+    print(f"DEBUG times img1={img1_ds.time.values} img2={img2_ds.time.values}")
     
     # scale search limit with temporal baseline assuming max velocity 1000 m/yr (100 px/yr)
     t_baseline = (img2_ds.time.isel(time=0) - img1_ds.time.isel(time=0)).dt.days
     search_limit_x = search_limit_y = round(((t_baseline/365.25)*120).item())
     
     # run autoRIFT feature tracking
+    print(f"DEBUG t_baseline={t_baseline.item()} search_limit={search_limit_x}")
     obj = run_autoRIFT(img1, img2, search_limit_x=search_limit_x, search_limit_y=search_limit_y)
+    print(f"DEBUG Dx shape={obj.Dx.shape} finite={np.isfinite(obj.Dx).mean():.4f} noDataMask_true={np.mean(obj.NoDataMask):.4f} grid={obj.xGrid.shape} I1dtype={obj.I1.dtype} I1nonzero={(obj.I1>0).mean():.3f}")
     # postprocess offsets
     ds = prep_outputs(obj, img1_ds, img2_ds)
+    print(f"DEBUG out veloc_x finite={np.isfinite(ds.veloc_x.values).mean():.4f} shape={ds.veloc_x.shape}")
 
     # write out velocity to tif
     ds.veloc_x.rio.to_raster(f'S2_{args.img1_date}_{args.img2_date}_veloc_x.tif')
