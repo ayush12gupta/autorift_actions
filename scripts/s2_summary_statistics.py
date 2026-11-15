@@ -1,94 +1,58 @@
 #! /usr/bin/env python
-
-import xarray as xr
-import rasterio as rio
-import rioxarray
+"""Summary statistics over all S2 velocity maps (veloc_x / veloc_y GeoTIFFs) in a directory."""
 from glob import glob
-from datetime import datetime
-import seaborn as sns
+import sys
+import numpy as np
+import xarray as xr
+import rioxarray
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# functions to load tifs to xarray
-def xr_read_geotif(geotif_file_path, masked=True):
-    da = rioxarray.open_rasterio(geotif_file_path, masked=True)
-    # Extract bands and assign as variables in xr.Dataset()
-    ds = xr.Dataset()
-    for i, v in enumerate(da.band):
-        da_tmp = da.sel(band=v)
-        da_tmp.name = "band" + str(i + 1)
-        ds[da_tmp.name] = da_tmp
-    # Delete empty band coordinates.
-    del ds.coords["band"]
 
-    return ds
+def stack(data_dir, comp):
+    files = sorted(glob(f"{data_dir}/**/S2_*_veloc_{comp}.tif", recursive=True))
+    if not files:
+        sys.exit(f"no S2_*_veloc_{comp}.tif files found under {data_dir}")
+    ref = rioxarray.open_rasterio(files[0], masked=True).squeeze(drop=True)
+    das = [rioxarray.open_rasterio(f, masked=True).squeeze(drop=True).rio.reproject_match(ref) for f in files]
+    return xr.concat(das, dim="pair"), files
 
-def combine_ds(data_dir, file_type='horizontal_velocity'):
-    datasets = []
-    tif_list = glob(f'{data_dir}/S2*{file_type}.tif')
-    for tif_path in tif_list:
-        dates = tif_path.split('/')[-1][3:24] #parse filename for dates
-        start_date = datetime.strptime(dates[:10], '%Y-%m-%d')
-        end_date = datetime.strptime(dates[11:], '%Y-%m-%d')
-        t_baseline = end_date - start_date
-        
-        src = xr_read_geotif(tif_path, masked=False) #read product to xarray ds
-        src = src.assign_coords({"dates": dates})
-        src = src.expand_dims("dates")
-        
-        src = src.assign_coords(start_date = ('dates', [start_date]))
-        src = src.assign_coords(end_date = ('dates', [end_date]))
-        src = src.assign_coords(t_baseline = ('dates', [t_baseline]))
-
-        src = src.rename({'band1':file_type})
-        
-        datasets.append(src)
-       
-    ds = xr.concat(datasets, dim="dates", combine_attrs="no_conflicts") #create dataset
-    ds = ds.sortby('dates')
-
-    return ds 
 
 def main():
-    # read in tifs
-    veloc_ds = combine_ds(data_dir='.', file_type='horizontal_velocity')
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else "."
+    vx, files = stack(data_dir, "x")
+    vy, _ = stack(data_dir, "y")
+    print(f"{len(files)} velocity maps")
 
-    # calculate and save median velocity
-    veloc_da_median = veloc_ds.horizontal_velocity.median(dim='dates')
-    veloc_da_median.rio.to_raster('median_horizontal_velocity_magnitude.tif')
-    # save standard deviation of velocity
-    veloc_da_stdev = veloc_ds.horizontal_velocity.std(dim='dates')
-    veloc_da_stdev.rio.to_raster('stdev_horizontal_velocity_magnitude.tif')
-    # save valid velocity pixel count
-    veloc_da_count = veloc_ds.horizontal_velocity.count(dim='dates')
-    veloc_da_count.rio.to_raster('count_horizontal_velocity_magnitude.tif')
-    
-    # plot summary statistics
-    sns.set_theme()
+    # median of the components first, then speed: the median of per-pair speeds is
+    # biased high wherever true motion is below the noise level
+    vx_med = vx.median("pair")
+    vy_med = vy.median("pair")
+    speed_med = np.hypot(vx_med, vy_med)
+    speed_std = np.hypot(vx, vy).std("pair")
+    count = vx.notnull().sum("pair")
+
+    for name, da in [("median_veloc_x", vx_med), ("median_veloc_y", vy_med),
+                     ("median_horizontal_velocity_magnitude", speed_med),
+                     ("stdev_horizontal_velocity_magnitude", speed_std),
+                     ("count_horizontal_velocity_magnitude", count.astype("float32"))]:
+        da.rio.write_crs(vx.rio.crs).rio.to_raster(f"{name}.tif")
+
+    frac = np.isfinite(vx).mean(("y", "x")).values
+    print(f"valid fraction per pair: min={frac.min():.3f} median={np.median(frac):.3f} max={frac.max():.3f}")
+    print(f"median speed over AOI: {float(speed_med.median()):.2f} m/yr; 95th pct: {float(speed_med.quantile(0.95)):.2f} m/yr")
+
+    vmax = float(np.nanpercentile(speed_med.values, 99))
     f, ax = plt.subplots(1, 3, figsize=(15, 5), sharex=True, sharey=True)
-    veloc_da_median.plot(ax=ax[0], vmin=0, vmax=300, cmap='inferno', cbar_kwargs= {'shrink':0.7, 'label':'velocity (m/yr)'})
-    veloc_da_stdev.plot(ax=ax[1], vmin=0, vmax=300, cmap='cividis', cbar_kwargs= {'shrink':0.7, 'label':'standard deviation (m/yr)'})
-    veloc_da_count.plot(ax=ax[2], vmin=0, cmap='Blues', cbar_kwargs= {'shrink':0.7, 'label':'pixel count'})
-    ax[0].set_aspect('equal')
-    ax[1].set_aspect('equal')
-    ax[2].set_aspect('equal')
-    ax[0].set_title(f'median velocity')
-    ax[1].set_title(f'velocity standard deviation')
-    ax[2].set_title(f'valid pixel count')
-    ax[0].set_xticks([])
-    ax[0].set_yticks([])
-    ax[1].set_xticks([])
-    ax[1].set_yticks([])
-    ax[2].set_xticks([])
-    ax[2].set_yticks([])
-    ax[0].set_xlabel('')
-    ax[0].set_ylabel('')
-    ax[1].set_xlabel('')
-    ax[1].set_ylabel('')
-    ax[2].set_xlabel('')
-    ax[2].set_ylabel('')
+    speed_med.plot(ax=ax[0], vmin=0, vmax=vmax, cmap="inferno", cbar_kwargs={"shrink": 0.7, "label": "velocity (m/yr)"})
+    speed_std.plot(ax=ax[1], vmin=0, vmax=vmax, cmap="cividis", cbar_kwargs={"shrink": 0.7, "label": "standard deviation (m/yr)"})
+    count.plot(ax=ax[2], vmin=0, cmap="Blues", cbar_kwargs={"shrink": 0.7, "label": "pixel count"})
+    for a, t in zip(ax, ["median velocity", "velocity standard deviation", "valid pixel count"]):
+        a.set_aspect("equal"); a.set_title(t); a.set_xticks([]); a.set_yticks([]); a.set_xlabel(""); a.set_ylabel("")
     f.tight_layout()
-    
-    f.savefig('velocity_summary_statistics.png', dpi=300)
+    f.savefig("velocity_summary_statistics.png", dpi=300)
+
 
 if __name__ == "__main__":
-   main()
+    main()

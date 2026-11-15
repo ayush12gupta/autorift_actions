@@ -87,3 +87,12 @@ jobs:
       stop_month: ${{ matrix.stop_month }}
       min_days: ${{ inputs.min_days }}
       max_days: ${{ inputs.max_days }}
+
+  # Summarize every velocity map produced by this run
+  summary_statistics:
+    needs: batch_s2_image_correlation
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/summary_statistics.yml

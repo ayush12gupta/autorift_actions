@@ -1,15 +1,24 @@
-# Batch process many image pairs
+# Summary statistics over all velocity maps of a run
 name: summary_statistics
 run-name: summary_statistics
 
 on:
   workflow_dispatch:
+    inputs:
+        run_id:
+            type: string
+            required: false
+            description: run ID of the batch run whose velocity maps to summarize (blank = this run)
+            default: ''
   workflow_call:
 
 jobs:
     summary_statistics:
         name: summary_statistics
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            actions: read
         defaults:
             run:
                 shell: bash -el {0}
@@ -28,12 +37,14 @@ jobs:
             - name: Download Velocity Map Artifacts
               uses: actions/download-artifact@v4
               with:
-                  path:
+                  path: velocity_maps
                   merge-multiple: true
-                
+                  run-id: ${{ inputs.run_id || github.run_id }}
+                  github-token: ${{ github.token }}
+
             - name: Compute Summary Statistics
               run: |
-                python -u summary_statistics.py
+                python -u scripts/s2_summary_statistics.py velocity_maps
 
             - name: Upload Summary Statistics Figure as Artifact
               uses: actions/upload-artifact@v4
@@ -42,9 +53,21 @@ jobs:
                 path: |
                     velocity_summary_statistics.png
 
-            - name: Upload Median Horizontal Velocity as Artifact
+            - name: Upload Summary Rasters as Artifact
               uses: actions/upload-artifact@v4
               with:
-                name: velocity_maps
+                name: summary_velocity_maps
                 path: |
-                    *.tif
+                    median_*.tif
+                    stdev_*.tif
+                    count_*.tif
+
+            - name: Commit summary outputs to a results branch
+              run: |
+                mkdir -p results/${{ inputs.run_id || github.run_id }}
+                cp velocity_summary_statistics.png median_*.tif stdev_*.tif count_*.tif results/${{ inputs.run_id || github.run_id }}/
+                git config user.name "github-actions[bot]"
+                git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                git add results
+                git commit -m "Summary statistics for run ${{ inputs.run_id || github.run_id }}"
+                git push origin HEAD:refs/heads/results/run-${{ inputs.run_id || github.run_id }}

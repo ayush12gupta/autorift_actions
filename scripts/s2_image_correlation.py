@@ -104,7 +104,10 @@ def run_autoRIFT(img1, img2, skip_x=4, skip_y=4, min_x_chip=16, max_x_chip=64,
     # step=SkipSampleX). Left unset, autoRIFT keeps its class default (32px), which
     # silently disables the ChipSize0/GridSpacing oversample ratio used to size the
     # multi-resolution consistency (NDC) filters below -- see autoRIFT.py:474-505.
-    obj.GridSpacingX = skip_x
+    # NOTE: disabled for small AOIs. With GridSpacingX = skip_x the consistency (NDC)
+    # filter window becomes (FiltWidth-1)*ChipSize0/GridSpacing+1 = 65 grid cells, which
+    # rejected every match over the ~13x15 km Mount Baker AOI (all-NaN outputs).
+    # obj.GridSpacingX = skip_x
 
     # Kernel sizes to use for correlation
     obj.ChipSizeMinX = min_x_chip
@@ -508,6 +511,7 @@ def main():
     obj = run_autoRIFT(img1, img2, search_limit_x=search_limit_x, search_limit_y=search_limit_y)
     # postprocess offsets
     ds = prep_outputs(obj, img1_ds, img2_ds)
+    print(f"valid velocity fraction: {np.isfinite(ds.veloc_x.values).mean():.3f}")
 
     # write out velocity to tif
     ds.veloc_x.rio.to_raster(f'S2_{args.img1_date}_{args.img2_date}_veloc_x.tif')
