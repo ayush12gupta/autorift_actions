@@ -87,7 +87,8 @@ def download_s2(img1_date, img2_date, aoi):
     return img1_ds, img2_ds 
 
 def run_autoRIFT(img1, img2, skip_x=4, skip_y=4, min_x_chip=16, max_x_chip=64,
-                 preproc_filter_width=3, mpflag=4, search_limit_x=30, search_limit_y=30):
+                 preproc_filter_width=3, mpflag=4, search_limit_x=30, search_limit_y=30,
+                 filt_width=17, frac_valid=0.32, mad_scalar=2.5, set_grid_spacing=True):
     '''
     Configure and run autoRIFT feature tracking with Sentinel-2 data for large mountain glaciers
     ''' 
@@ -104,7 +105,8 @@ def run_autoRIFT(img1, img2, skip_x=4, skip_y=4, min_x_chip=16, max_x_chip=64,
     # step=SkipSampleX). Left unset, autoRIFT keeps its class default (32px), which
     # silently disables the ChipSize0/GridSpacing oversample ratio used to size the
     # multi-resolution consistency (NDC) filters below -- see autoRIFT.py:474-505.
-    obj.GridSpacingX = skip_x
+    if set_grid_spacing:
+        obj.GridSpacingX = skip_x
 
     # Kernel sizes to use for correlation
     obj.ChipSizeMinX = min_x_chip
@@ -141,14 +143,14 @@ def run_autoRIFT(img1, img2, skip_x=4, skip_y=4, min_x_chip=16, max_x_chip=64,
     obj.NoDataMask = noDataMask
 
     # Consensus gate (NDC) — require more neighbor agreement in a larger window
-    obj.FiltWidth = 17        # was 5; must be odd
-    obj.FracValid = 0.32     # was 0.32 (=8/25)
+    obj.FiltWidth = filt_width        # was 5; must be odd
+    obj.FracValid = frac_valid     # was 0.32 (=8/25)
     
     # Displacement-distance count tolerance (stricter local consistency)
     obj.FracSearch = 0.20    # was 0.20
     
     # MAD outlier gate (tighter)
-    obj.MadScalar = 2.5      # was 4
+    obj.MadScalar = mad_scalar      # was 4
 
     print("preprocessing images")
     obj.WallisFilterWidth = preproc_filter_width
@@ -509,6 +511,16 @@ def main():
     
     # run autoRIFT feature tracking
     print(f"DEBUG t_baseline={t_baseline.item()} search_limit={search_limit_x}")
+    import time as _t
+    for cfg in [dict(filt_width=5, mad_scalar=4, set_grid_spacing=True),
+                dict(filt_width=17, mad_scalar=2.5, set_grid_spacing=False),
+                dict(filt_width=5, mad_scalar=4, set_grid_spacing=False),
+                dict(filt_width=5, mad_scalar=2.5, set_grid_spacing=True),
+                dict(filt_width=9, mad_scalar=2.5, set_grid_spacing=True)]:
+        t0 = _t.time()
+        o = run_autoRIFT(img1.copy(), img2.copy(), search_limit_x=search_limit_x, search_limit_y=search_limit_y, **cfg)
+        sp = np.hypot(o.Dx, o.Dy) * 10 / t_baseline.item() * 365.25
+        print(f"SWEEP {cfg} finite={np.isfinite(o.Dx).mean():.4f} median_speed={np.nanmedian(sp) if np.isfinite(sp).any() else None} p90={np.nanpercentile(sp,90) if np.isfinite(sp).any() else None} secs={_t.time()-t0:.1f}")
     obj = run_autoRIFT(img1, img2, search_limit_x=search_limit_x, search_limit_y=search_limit_y)
     print(f"DEBUG Dx shape={obj.Dx.shape} finite={np.isfinite(obj.Dx).mean():.4f} noDataMask_true={np.mean(obj.NoDataMask):.4f} grid={obj.xGrid.shape} I1dtype={obj.I1.dtype} I1nonzero={(obj.I1>0).mean():.3f}")
     # postprocess offsets
